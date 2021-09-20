@@ -30,6 +30,7 @@
 #include <arpa/inet.h>     /*  inet_addr */
 #include <errno.h>         /*  socket error codes */
 #include <ifaddrs.h>
+#include <fcntl.h>
 
 
 #define SOCKET_ERROR            (-1)
@@ -77,7 +78,7 @@ bool CNetwork::InitWinsock()
         return false;
     }
     if (wsaData.wVersion != wVersionRequested)
-    {	
+    {
         SetErrorString();
         return false;
     }
@@ -85,10 +86,9 @@ bool CNetwork::InitWinsock()
     return true;
 } // InitWinsock
 
-
 bool CNetwork::Connect(const char* serverAddr, unsigned short nPort)
 {
-    mLastError   = 0;
+    mLastError = 0;
     mErrorStr[0] = 0;
 
     // Connect to QTM RT server.
@@ -98,8 +98,11 @@ bool CNetwork::Connect(const char* serverAddr, unsigned short nPort)
     {
         strcpy(mErrorStr, "Socket could not be created.");
     }
+    fcntl(mSocket, F_SETFL, O_NONBLOCK);
 
     sockaddr_in sAddr;
+    fd_set fdset;
+    struct timeval tv;
 
     // First check if the address is a dotted number "A.B.C.D"
     if (inet_pton(AF_INET, serverAddr, &(sAddr.sin_addr)) == 0)
@@ -129,14 +132,26 @@ bool CNetwork::Connect(const char* serverAddr, unsigned short nPort)
     sAddr.sin_port = htons(nPort);
     sAddr.sin_family = AF_INET;
 
+    connect(mSocket, (sockaddr*)(&sAddr), sizeof(sAddr));
+    FD_ZERO(&fdset);
+    FD_SET(mSocket, &fdset);
+    tv.tv_sec = 10; /* 10 second timeout */
+    tv.tv_usec = 0;
 
-    if (connect(mSocket, (sockaddr*)(&sAddr), sizeof(sAddr)) == SOCKET_ERROR)
+    if (select(mSocket + 1, NULL, &fdset, NULL, &tv) == 1)
     {
-        strcpy(mErrorStr, "Connect failed.");
+        int so_error;
+        socklen_t len = sizeof so_error;
 
-        //SetErrorString();
-        closesocket(mSocket);
-        return false;
+        getsockopt(mSocket, SOL_SOCKET, SO_ERROR, &so_error, &len);
+
+        if (so_error != 0)
+        {
+            strcpy(mErrorStr, "Connect failed.");
+            // SetErrorString();
+            closesocket(mSocket);
+            return false;
+        }
     }
 
     // Disable Nagle's algorithm
@@ -308,7 +323,7 @@ CNetwork::Response CNetwork::Receive(SOCKET socket, SOCKET udpSocket, char* rtDa
 
     // Wait for activity on the TCP and UDP sockets.
     int selectRes = select(nfds, &readFDs, nullptr, &exceptFDs, pTimeval);
-    
+
     if (selectRes == SOCKET_ERROR)
     {
         SetErrorString();
@@ -413,13 +428,13 @@ bool CNetwork::SendUDPBroadcast(const char* sendBuf, int size, short port, unsig
         IP_ADAPTER_INFO* ifa = nullptr;
         ULONG ulLen = 0;
         DWORD erradapt;
-        
+
         // Find all network interfaces.
         erradapt = ::GetAdaptersInfo(ifap, &ulLen);
         if (erradapt == ERROR_BUFFER_OVERFLOW)
         {
             ifap = (IP_ADAPTER_INFO*)malloc(ulLen);
-            erradapt = ::GetAdaptersInfo(ifap, &ulLen);      
+            erradapt = ::GetAdaptersInfo(ifap, &ulLen);
         }
 
         if (erradapt == ERROR_SUCCESS)
@@ -437,7 +452,7 @@ bool CNetwork::SendUDPBroadcast(const char* sendBuf, int size, short port, unsig
                 {
                     unsigned int nIPaddr;
                     unsigned int nIPmask;
-                    
+
                     if (inet_pton(AF_INET, ifa->IpAddressList.IpAddress.String, &nIPaddr) == 0 ||
                         inet_pton(AF_INET, ifa->IpAddressList.IpMask.String, &nIPmask) == 0)
                     {
@@ -499,12 +514,12 @@ bool CNetwork::SendUDPBroadcast(const char* sendBuf, int size, short port, unsig
 
 
 void CNetwork::SetErrorString()
-{ 
+{
 #ifdef _WIN32
-    char* error = nullptr; 
-    mLastError = GetLastError(); 
-    FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, nullptr, mLastError, 0, reinterpret_cast<LPTSTR>(&error), 0, nullptr); 
-    sprintf(mErrorStr, "%s", error); 
+    char* error = nullptr;
+    mLastError = GetLastError();
+    FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, nullptr, mLastError, 0, reinterpret_cast<LPTSTR>(&error), 0, nullptr);
+    sprintf(mErrorStr, "%s", error);
     LocalFree(error);
 #else
 	mLastError = errno;
@@ -542,7 +557,7 @@ bool CNetwork::IsLocalAddress(unsigned int nAddr) const
     if (erradapt == ERROR_BUFFER_OVERFLOW)
     {
         pAdptInfo = (IP_ADAPTER_INFO*)malloc(ulLen);
-        erradapt = ::GetAdaptersInfo(pAdptInfo, &ulLen);      
+        erradapt = ::GetAdaptersInfo(pAdptInfo, &ulLen);
     }
 
     if (erradapt == ERROR_SUCCESS)
