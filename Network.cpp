@@ -59,6 +59,11 @@ CNetwork::CNetwork()
 
 CNetwork::~CNetwork()
 {
+    if (Connected()) 
+    {
+        Disconnect();
+    }
+
 #ifdef _WIN32
     WSACleanup();
 #endif
